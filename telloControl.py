@@ -50,7 +50,7 @@ CLOSE_THRESHOLD = 0.05
 SAVE_LOC1 = r'Data/drone_frame1.png'
 SAVE_LOC2 = r'Data/drone_frame2.png'
 SAVE_FPS = 25
-
+frameNum=0
 
 class FrontEnd(object):
 
@@ -157,6 +157,7 @@ class FrontEnd(object):
 
                 if k == ord('b'):
                     self.tello.get_battery()
+
 
                 # b to save checkpoint
                 if k == ord('n'):
@@ -380,6 +381,7 @@ class FrontEnd(object):
         frame_read = self.tello.get_frame_read()
         first_pos = self.getRealTimePos()
         sec = 0
+        frameNum=0
         # print("Taking Off")
         # self.tello.takeoff()
         # self.tello.get_battery()
@@ -408,6 +410,11 @@ class FrontEnd(object):
                     self.tello.takeoff()
                     self.tello.get_battery()
                 self.send_rc_control = True
+
+            if k == ord('s'):
+                print("********************************Frame Saved******************************************")
+                cv2.imwrite("frames/frame" + str(frameNum) + ".png", frameRet)
+                frameNum = frameNum + 1
 
             # Press L to land
             if k == ord('l'):
