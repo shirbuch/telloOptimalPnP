@@ -24,7 +24,7 @@ parser.add_argument('-sx', '--saftey_x', type=int, default=100,
 parser.add_argument('-sy', '--saftey_y', type=int, default=55,
                     help='use -sy to change the saftey bound on the y axis . Range 0-360')
 parser.add_argument('-os', '--override_speed', type=int, default=1,
-                   help='use -os to change override speed. Range 0-3')
+                    help='use -os to change override speed. Range 0-3')
 parser.add_argument('-ss', "--save_session", action='store_true',
                     help='add the -ss flag to save your session as an image sequence in the Sessions folder')
 parser.add_argument('-D', "--debug", action='store_true',
@@ -44,24 +44,23 @@ orb = cv2.ORB_create(
     fastThreshold=20
 )
 
-min_featured = 4
-num_best_points = 50
-frameRate = 1000
+min_featured = 20
+num_best_points = 100
+frameRate = 30
 CAMERA_CALIBRATION = camera_params.TELLO
 DIST_COFF = camera_params.DistCoff
 # Choose True to use coresets
 USE_CORESET = False
 # Choose True to use opticflow
-USE_OPTICFLOW = False
-
+USE_OPTICFLOW = True
 
 # Parameters for lucas kanade optical flow
-lk_params = dict( winSize = (15,15),
-                  maxLevel = 2,
-                  criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+lk_params = dict(winSize=(240, 180),
+                 maxLevel=7,
+                 criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
 # Create some random colors
-color = np.random.randint(0,255,(100,3))
+color = np.random.randint(0, 255, (100, 3))
 
 # Speed of the drone
 S = 7
@@ -76,11 +75,14 @@ checkpoints = []
 normalized = []
 zeros = [0] * 3
 
-CLOSE_THRESHOLD = 0.05
+CLOSE_THRESHOLD = 0.015
 
 SAVE_LOC1 = r'Data/drone_frame1.png'
 SAVE_LOC2 = r'Data/drone_frame2.png'
 SAVE_FPS = 12
+
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+video = cv2.VideoWriter('window.avi', fourcc, 25, (960, 720))
 
 
 class FrontEnd(object):
@@ -149,7 +151,7 @@ class FrontEnd(object):
             return
 
         frame_read = self.tello.get_frame_read()
-
+        # cap = cv2.VideoCapture(2)  # capture camera
         should_stop = False
         imgCount = 0
         OVERRIDE = True
@@ -164,11 +166,12 @@ class FrontEnd(object):
         for i in range(len(ideal_positions)):
             ideal_positions_ar.append(self.vec_after_rotation(ideal_positions[i]))
         for i in range(len(ideal_positions_ar)):
-            index = (i+1)%len(ideal_positions_ar)
-            line = plt.Line2D((ideal_positions_ar[i][0], ideal_positions_ar[index][0]), (ideal_positions_ar[i][1], ideal_positions_ar[index][1]), lw=1.5)
+            index = (i + 1) % len(ideal_positions_ar)
+            line = plt.Line2D((ideal_positions_ar[i][0], ideal_positions_ar[index][0]),
+                              (ideal_positions_ar[i][1], ideal_positions_ar[index][1]), lw=1.5)
             plt.gca().add_line(line)
         plt.axis('scaled')
-        
+
         if args.debug:
             print("DEBUG MODE ENABLED!")
 
@@ -182,16 +185,17 @@ class FrontEnd(object):
 
                 if time.time() - (1 / SAVE_FPS) > sec:
                     ourframe = frame_read.frame
-
+                    video.write(ourframe)
+                    # _,ourframe = cap.read()
                     imgCount += 1
-                    cv2.imwrite(self.save_loc_local, ourframe)
+                    # cv2.imwrite(self.save_loc_local, ourframe)
 
                     sec = time.time()
                     self.save_loc_local = SAVE_LOC2 if self.save_loc_local == SAVE_LOC1 else SAVE_LOC1
 
                 time.sleep(1 / FPS)
-
-                if frameNum is frameRate:
+                frameK = False
+                if (frameNum is frameRate) or (OPTICFLOW_FLAG and 'inliers_points_2d' in vars() and len(inliers_points_2d) < min_featured):
                     frameK = True
                     frameNum = 0
 
@@ -209,20 +213,27 @@ class FrontEnd(object):
                     lines = generatelines.generatelines(points_2d, CAMERA_CALIBRATION)
 
                     if not USE_CORESET:
-                        _, _, _, inliers = cv2.solvePnPRansac(np.array(points_3d), np.array(points_2d), np.array(CAMERA_CALIBRATION), np.array(DIST_COFF))
-                        inliers_points_3d = []
-                        inliers_lines = []
+
                         try:
+                            _, _, _, inliers = cv2.solvePnPRansac(np.array(points_3d), np.array(points_2d),
+                                                                  np.array(CAMERA_CALIBRATION), np.array(DIST_COFF))
+                            inliers_points_3d = []
+                            inliers_lines = []
+                            inliers_points_2d = []
                             for i in range(len(inliers)):
                                 inliers_lines.append(np.array(lines[inliers[i][0]]))
                                 inliers_points_3d.append(np.array(points_3d[inliers[i][0]]))
+                                inliers_points_2d.append(np.array(points_2d[inliers[i][0]]))
                         except:
+                            frameNum = frameRate
                             print("ERROR: cant detect new points")
                             continue
                         inliers_points_3d = np.array(inliers_points_3d)
                         inliers_lines = np.array(inliers_lines)
                         R, t = optimalPnP(inliers_points_3d, inliers_lines)
                         R[0, 1] = -R[0, 1]
+
+
 
                     if USE_CORESET:
                         points_3d_cor, points_2d_cor, lines_cor, weights, indexes = createCoreset(
@@ -235,7 +246,7 @@ class FrontEnd(object):
                         R, t = weighted_optimalPnP(points_3d_cor, lines_cor, weights, indexes)
                     OPTICFLOW_FLAG = True
                     cam_pos = np.dot(np.transpose(R), t)
-                    #if cam_pos is not None:
+                    # if cam_pos is not None:
                     #    print(cam_pos[0], " ", cam_pos[1], " ", cam_pos[2])
 
                 elif (OPTICFLOW_FLAG and USE_CORESET) is True:
@@ -247,7 +258,14 @@ class FrontEnd(object):
                 elif OPTICFLOW_FLAG is True:
                     # use points_3d, points_2d with opticflow
                     points_2d_optic, st = opticFlow(old_frame, ourframe, inliers_points_2d)
-                    lines_optic = generatelines.generatelines(points_2d_optic, camera_params.LOGITECH2)
+                    lines_optic = generatelines.generatelines(points_2d_optic, CAMERA_CALIBRATION)
+
+                    inliers_3d = []
+                    for i in range(len(inliers_points_3d)):
+                        if st[i] == 1:
+                            inliers_3d.append(inliers_points_3d[i])
+                    inliers_points_3d = inliers_3d
+
                     R, t = optimalPnP(inliers_points_3d, lines_optic)
                     R[0, 1] = -R[0, 1]
                     inliers_points_2d = points_2d_optic
@@ -255,12 +273,12 @@ class FrontEnd(object):
 
                 # if cam_pos is not None:
                 #     print(cam_pos[0], " ", cam_pos[1], " ", cam_pos[2])
-                    # try:
-                    #     with open(r"Data/pos1.csv", "r") as f:
-                    #         np.savetxt(r"Data/pos1.csv", cam_pos, delimiter=" ", newline=" ")
-                    # except:
-                    #     with open(r"Data/pos2.csv", "r") as f:
-                    #         np.savetxt(r"Data/pos2.csv", cam_pos, delimiter=" ", newline=" ")
+                # try:
+                #     with open(r"Data/pos1.csv", "r") as f:
+                #         np.savetxt(r"Data/pos1.csv", cam_pos, delimiter=" ", newline=" ")
+                # except:
+                #     with open(r"Data/pos2.csv", "r") as f:
+                #         np.savetxt(r"Data/pos2.csv", cam_pos, delimiter=" ", newline=" ")
 
                 old_frame = ourframe.copy()
                 frameNum += 1
@@ -269,7 +287,7 @@ class FrontEnd(object):
                 k = cv2.waitKey(30) & 0xff
                 if k == ord('b'):
                     self.tello.get_battery()
-                
+
                 if k == ord('s'):
                     print("********************************Frame Saved******************************************")
                     cv2.imwrite("frames/frame" + str(frameNum) + ".png", ourframe)
@@ -285,8 +303,11 @@ class FrontEnd(object):
                     if not args.debug:
                         print("Taking Off")
                         self.tello.takeoff()
-                        time.sleep(5)
+                        # time.sleep(1)
+                        # self.tello.rotate_counter_clockwise(45)
+                        time.sleep(4)
                         self.tello.get_battery()
+                        frameNum = frameRate
                     self.send_rc_control = True
 
                 # Press L to land
@@ -303,7 +324,8 @@ class FrontEnd(object):
 
                 trans_vec = cam_pos - ideal_positions[index]
                 trans_vec[2] = 0
-                print(np.abs(trans_vec))
+                # print(np.abs(trans_vec))
+                print(cam_pos)
                 if np.all(np.abs(trans_vec) < CLOSE_THRESHOLD):
                     index += 1
                     pointstodraw.append(self.vec_after_rotation(cam_pos))
@@ -316,8 +338,9 @@ class FrontEnd(object):
                         print("Reached the end destination")
                         plt.axes()
                         for i in range(len(pointstodraw)):
-                            index = (i+1)%len(pointstodraw)
-                            line = plt.Line2D((pointstodraw[i][0], pointstodraw[index][0]), (pointstodraw[i][1], pointstodraw[index][1]), lw=1.5)
+                            index = (i + 1) % len(pointstodraw)
+                            line = plt.Line2D((pointstodraw[i][0], pointstodraw[index][0]),
+                                              (pointstodraw[i][1], pointstodraw[index][1]), lw=1.5)
                             plt.gca().add_line(line)
                         plt.axis('scaled')
                         return
@@ -325,11 +348,11 @@ class FrontEnd(object):
                 trans_vec = self.vec_after_rotation(trans_vec)
 
                 if trans_vec[0] > CLOSE_THRESHOLD:
+                    # self.left_right_velocity = int(8)
                     self.left_right_velocity = int(S * oSpeed)
-                    # self.left_right_velocity = - int(5)
                 elif trans_vec[0] < -CLOSE_THRESHOLD:
+                    # self.left_right_velocity = - int(8)
                     self.left_right_velocity = - int(S * oSpeed)
-                    # self.left_right_velocity = int(5)
                 else:
                     self.left_right_velocity = 0
 
@@ -353,8 +376,6 @@ class FrontEnd(object):
                 else:
                     show = "AI: {}".format(str(tDistance))
 
-                # Display the resulting frame
-                cv2.imshow(f'Tello Tracking...', ourframe)
 
             # On exit, print the battery
             self.tello.get_battery()
@@ -369,7 +390,6 @@ class FrontEnd(object):
             print("Landing")
             self.tello.land()
 
-
     def getRealIdealPos(self):
         positions = []
         with open(r"Data/idealpos.csv", "r") as f:
@@ -381,23 +401,19 @@ class FrontEnd(object):
     def battery(self):
         return self.tello.get_battery()[:2]
 
-
     def update(self):
         """ Update routine. Send velocities to Tello."""
         if self.send_rc_control:
             self.tello.send_rc_control(self.left_right_velocity, self.for_back_velocity, self.up_down_velocity,
                                        self.yaw_velocity)
 
-
     def rotate_left(self):
         self.rotate_right(mul=-1)
-
 
     def vec_after_rotation(self, vec):
         x = vec[0] * np.cos(self.theta) - vec[1] * np.sin(self.theta)
         y = vec[0] * np.sin(self.theta) + vec[1] * np.cos(self.theta)
         return np.array([x, y, vec[2]], np.float32)
-
 
     def getRealTimePos(self):
         pos = []
@@ -421,11 +437,35 @@ class FrontEnd(object):
 
         return np.array(pos, np.float32)
 
-
     def check_orb_control(self, prev_pos):
         if np.all(np.equal(self.getRealTimePos(), prev_pos)):
             return False
         return True
+
+#
+# def get_points(current_frame,
+#                old_frame,
+#                ModelPoints,
+#                ModelDescriptors):
+#     points3d = []
+#     points2d = []
+#     print("***********************Detecting new points***********************")
+#     orb = cv2.ORB_create(nfeatures=2000)
+#     # find the keypoints and compute the orb descriptors
+#     kp, des = orb.detectAndCompute(current_frame, None)
+#     FLANN_INDEX_LSH = 6
+#     index_params = dict(algorithm=FLANN_INDEX_LSH, trees=12)
+#     search_params = dict(checks=30)
+#     flann = cv2.FlannBasedMatcher(index_params, search_params)
+#     # matches = flann.knnMatch(ModelDescriptors, des,k=2)
+#     matches = flann.knnMatch(des,ModelDescriptors,k=2)
+#     for m, n in matches:
+#         if m.distance < 0.7* n.distance:
+#             points3d.append(ModelPoints[m.trainIdx].realLoc)
+#             # points3d.append(ModelPoints[m.queryIdx].realLoc)
+#             points2d.append(kp[m.queryIdx].pt)
+#             # points2d.append(kp[m.trainIdx].pt)
+#     return points3d, points2d
 
 
 def get_points(current_frame,
@@ -479,7 +519,6 @@ def get_points(current_frame,
 
 # Returns matched coreset 2d points and 3d points
 def createCoreset(current_frame, old_frame, points3D, points2D, Lines):
-
     points3d_coreset = []
     points2d_coreset = []
     lines_coreset = []
@@ -642,7 +681,7 @@ def opticFlow(old_frame: np.ndarray,
     :return new_points: the new updated points
     :return st: a binary list - 1 if the point 'i' is in the frame, 0 otherwise
     """
-
+    mask = np.zeros_like(frame)
     points = np.array(points).astype('float32')
 
     new_points: np.ndarray
@@ -654,13 +693,30 @@ def opticFlow(old_frame: np.ndarray,
         None,
         **lk_params
     )
-    new_points = new_points.reshape([-1, 1, 2])  # -1 is any number, 2 is for x,y # TODO: Reomove this 1
-    new_points = convert_to_tuple_list(new_points.tolist(), idx=0)  # Normalize to array of tuples
-
-    return new_points, st
 
 
+    good_new = []
+    good_old = []
+    # Select good points
+    for i in range(len(new_points)):
+        if st[i] == 1:
+            good_new.append(new_points[i])
+            good_old.append(points[i])
 
+    # draw the tracks
+    for i, (new, old) in enumerate(zip(good_new, good_old)):
+        a, b = new.ravel()
+        c, d = old.ravel()
+        mask = cv2.line(mask, (a, b), (c, d), (0,255,0), 2)
+        frame = cv2.circle(frame, (a, b), 5, (0,0,255), -1)
+    img = cv2.add(frame, mask)
+    cv2.imshow('frame', img)
+
+    good_new = np.array(good_new)
+    good_new = good_new.reshape([-1, 1, 2])  # -1 is any number, 2 is for x,y # TODO: Reomove this 1
+    good_new = convert_to_tuple_list(good_new.tolist(), idx=0)  # Normalize to array of tuples
+
+    return good_new, st
 
 
 def main():
